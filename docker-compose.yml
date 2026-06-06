@@ -1,0 +1,124 @@
+version: "3.9"
+
+services:
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: ssi_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ssi_db
+      POSTGRES_USER: ssi
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ssi_secret_change_me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ssi -d ssi_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ssi_net
+
+  # ── Backend ───────────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: ssi_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://ssi:${POSTGRES_PASSWORD:-ssi_secret_change_me}@postgres:5432/ssi_db
+      DATABASE_URL_SYNC: postgresql://ssi:${POSTGRES_PASSWORD:-ssi_secret_change_me}@postgres:5432/ssi_db
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-32-chars!!}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-change-me-fernet-key-base64-32ch=}
+      LINKEDIN_USERNAME: ${LINKEDIN_USERNAME}
+      LINKEDIN_PASSWORD: ${LINKEDIN_PASSWORD}
+      AI_PROVIDER: ${AI_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      REPORT_FROM_EMAIL: ${REPORT_FROM_EMAIL:-noreply@example.com}
+      REPORT_TO_EMAIL: ${REPORT_TO_EMAIL:-}
+      ENVIRONMENT: production
+      DEBUG: "false"
+      DATA_DIR: /app/data
+      CORS_ORIGINS: "http://localhost:3000,http://frontend:3000"
+    volumes:
+      - ssi_data:/app/data
+    ports:
+      - "8000:8000"
+    networks:
+      - ssi_net
+    command: >
+      sh -c "
+        alembic upgrade head &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+      "
+
+  # ── Frontend ──────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: runner
+    container_name: ssi_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NEXT_PUBLIC_API_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+    networks:
+      - ssi_net
+
+  # ── Scheduler (APScheduler in backend) ───────────────────────────────────────
+  scheduler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: ssi_scheduler
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://ssi:${POSTGRES_PASSWORD:-ssi_secret_change_me}@postgres:5432/ssi_db
+      DATABASE_URL_SYNC: postgresql://ssi:${POSTGRES_PASSWORD:-ssi_secret_change_me}@postgres:5432/ssi_db
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-32-chars!!}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-change-me-fernet-key-base64-32ch=}
+      LINKEDIN_USERNAME: ${LINKEDIN_USERNAME}
+      LINKEDIN_PASSWORD: ${LINKEDIN_PASSWORD}
+      AI_PROVIDER: ${AI_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      REPORT_FROM_EMAIL: ${REPORT_FROM_EMAIL:-noreply@example.com}
+      REPORT_TO_EMAIL: ${REPORT_TO_EMAIL:-}
+      DATA_DIR: /app/data
+    volumes:
+      - ssi_data:/app/data
+    networks:
+      - ssi_net
+    command: python -m app.scheduler
+
+volumes:
+  postgres_data:
+  ssi_data:
+
+networks:
+  ssi_net:
+    driver: bridge
